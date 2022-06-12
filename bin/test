@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+projectRootPath=$(cd $(dirname "${BASH_SOURCE[0]}") && pwd -P)/..
+configPath=$(cd $(dirname "${BASH_SOURCE[0]}") && pwd -P)/../config/test.env
+configTemplatePath=$(cd $(dirname "${BASH_SOURCE[0]}") && pwd -P)/../config/test.env.template
+scriptPath=$(cd $(dirname "${BASH_SOURCE[0]}") && pwd -P)/../infra/foreman-app/test.sh
+
+if [ -f $configPath ]; then
+  source "$configPath"
+  cd "$projectRootPath" && bash $scriptPath $@
+else
+  cp "$configTemplatePath" "$configPath"
+  echo "ERROR: configuration file not found for Test environment."
+  echo "       $configPath has been created and will require values to be set."
+fi

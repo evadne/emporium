@@ -1,0 +1,5 @@
+msgid "Welcome to %{name}!"
+msgstr "Welcome to Emporium!"
+
+msgid "application.name"
+msgstr "Emporium"

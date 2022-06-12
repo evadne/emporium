@@ -1,0 +1,8 @@
+msgid ""
+msgstr ""
+
+msgid "Welcome to %{name}!"
+msgstr ""
+
+msgid "application.name"
+msgstr ""

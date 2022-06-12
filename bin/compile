@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+projectRootPath=$(cd $(dirname "${BASH_SOURCE[0]}") && pwd -P)/..
+
+# Configure Compiler
+export CC=/usr/bin/clang
+export CXX=/usr/bin/clang++
+
+# Work around FastTLS configuration issues with OpenSSL not being found
+export LDFLAGS="-L/usr/local/opt/openssl/lib"
+export CFLAGS="-I/usr/local/opt/openssl/include/"
+export CPPFLAGS="-I/usr/local/opt/openssl/include/"
+export PKG_CONFIG_PATH="/usr/local/opt/openssl@3/lib/pkgconfig:$PKG_CONFIG_PATH"
+
+# Add CUDA for Linux
+export CUDA_HOME=/usr/local/cuda
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64
+export PATH=$PATH:$CUDA_HOME/bin
+
+cd "$projectRootPath" && mix compile

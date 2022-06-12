@@ -1,0 +1,29 @@
+<% payload = assigns[:payload] %>
+
+<!DOCTYPE html>
+
+<html class="h-100" style="overflow: hidden" lang={Gettext.get_locale()}>
+  <head>
+    <title><%= get_title(@conn) %></title>
+    <%= for stylesheet_source <- get_stylesheet_sources(@conn) do %>
+      <link rel="stylesheet" href={stylesheet_source}>
+    <% end %>
+    <meta charset="utf-8" />
+    <%= csrf_meta_tag() %>
+  </head>
+  <body class="h-100" style="overflow: hidden">
+    <div class="d-flex h-100 flex-column">
+      <div class="d-flex flex-row flex-grow-1 flex-shrink-1" style="overflow: hidden">
+        <%= @inner_content %>
+      </div>
+    </div>
+    <%= if payload do %>
+      <script type="application/json" id="payload">
+        <%= URI.encode(Jason.encode!(payload)) %>
+      </script>
+    <% end %>
+    <%= for script_source <- get_script_sources(@conn) do %>
+      <script src={script_source}></script>
+    <% end %>
+  </body>
+</html>

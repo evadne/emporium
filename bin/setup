@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+# libsrtp2-dev libavcodec-dev libavformat-dev libavutil-dev build-essential clang llvm cmake make
+brew install openssl strp

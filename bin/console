@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+projectRootPath=$(cd $(dirname "${BASH_SOURCE[0]}") && pwd -P)/..
+configPath=$(cd $(dirname "${BASH_SOURCE[0]}") && pwd -P)/../config/dev.env
+configTemplatePath=$(cd $(dirname "${BASH_SOURCE[0]}") && pwd -P)/../config/dev.env.template
+consoleScriptPath=$(cd $(dirname "${BASH_SOURCE[0]}") && pwd -P)/../infra/foreman-app/console.sh
+
+if [ -f $configPath ]; then
+  source "$configPath"
+  cd "$projectRootPath" && mix compile && bash $consoleScriptPath
+else
+  cp "$configTemplatePath" "$configPath"
+  echo "ERROR: configuration file not found for Development environment."
+  echo "       $configPath has been created and will require values to be set."
+fi
