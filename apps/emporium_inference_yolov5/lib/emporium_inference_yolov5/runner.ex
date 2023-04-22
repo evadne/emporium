@@ -18,8 +18,10 @@ defmodule EmporiumInference.YOLOv5.Runner do
             mailbox_pid: pid() | nil,
             pending_calls: :queue.queue({message :: term(), from :: GenServer.from()}),
             pending_requests: %{required(reference()) => from :: GenServer.from()},
+            pending_regions: %{required(reference()) => shmex :: Shmex.t()},
             acceptors_count: non_neg_integer(),
-            acceptors_supervisor_pid: pid() | nil
+            acceptors_supervisor_pid: pid() | nil,
+            available_regions: :queue.queue(Shmex.t())
           }
     defstruct status: :pending,
               exec_pid: nil,
@@ -27,8 +29,10 @@ defmodule EmporiumInference.YOLOv5.Runner do
               mailbox_pid: nil,
               pending_calls: :queue.new(),
               pending_requests: %{},
+              pending_regions: %{},
               acceptors_count: 1,
-              acceptors_supervisor_pid: nil
+              acceptors_supervisor_pid: nil,
+              available_regions: :queue.new()
   end
 
   alias EmporiumInference.YOLOv5.Acceptor
@@ -81,7 +85,11 @@ defmodule EmporiumInference.YOLOv5.Runner do
         from,
         %State{status: :available} = state
       ) do
-    {:ok, state} = send_request(:infer, {width, height, orientation, format, data}, from, state)
+    {:ok, region, state} = build_region(data, state)
+    request_data = {:shm, region.size, region.capacity, region.name}
+    request = {width, height, orientation, format, request_data}
+    {:ok, reference, state} = send_request(:infer, request, from, state)
+    state = %{state | pending_regions: put_in(state.pending_regions, [reference], region)}
     {:noreply, state}
   end
 
@@ -107,7 +115,7 @@ defmodule EmporiumInference.YOLOv5.Runner do
   @impl GenServer
   def handle_info({:stdout, _os_pid, message}, %State{} = state) do
     for line <- String.split(message, "\n"), line = String.trim(line), line != "" do
-      _ = Logger.debug(line)
+      _ = Logger.info(line)
     end
 
     {:noreply, state}
@@ -136,7 +144,9 @@ defmodule EmporiumInference.YOLOv5.Runner do
   @impl GenServer
   def handle_info({:reply, reference, result}, %State{} = state) do
     {:ok, state} = send_response(reference, result, state)
-    {:noreply, state}
+    {%Shmex{} = region, pending_regions} = pop_in(state.pending_regions, [reference])
+    available_regions = :queue.in(region, state.available_regions)
+    {:noreply, %{state | pending_regions: pending_regions, available_regions: available_regions}}
   end
 
   defp send_request(command, payload, from, state) do
@@ -145,7 +155,7 @@ defmodule EmporiumInference.YOLOv5.Runner do
     pending_requests = put_in(state.pending_requests, [reference], from)
     state = %{state | pending_requests: pending_requests}
     send(state.mailbox_pid, call)
-    {:ok, state}
+    {:ok, reference, state}
   end
 
   defp send_response(reference, result, state) do
@@ -197,5 +207,19 @@ defmodule EmporiumInference.YOLOv5.Runner do
 
   defp get_model_name do
     Application.get_env(@otp_app, :model_name, "yolov5s.torchscript")
+  end
+
+  defp build_region(data, state) do
+    with {{:value, region}, queue} <- :queue.out(state.available_regions) do
+      if byte_size(data) != region.capacity do
+        region = Shmex.new(data)
+        {:ok, region, %{state | available_regions: :queue.new()}}
+      else
+        {:ok, region} = Shmex.Native.write(region, data)
+        {:ok, region, %{state | available_regions: queue}}
+      end
+    else
+      {:empty, _queue} -> {:ok, Shmex.new(data), state}
+    end
   end
 end

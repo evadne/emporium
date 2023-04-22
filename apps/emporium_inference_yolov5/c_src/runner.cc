@@ -1,11 +1,18 @@
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <chrono>
 #include <iostream>
 #include <memory>
-#include <opencv2/dnn/dnn.hpp>
 #include <random>
 #include <string>
+
+#include <opencv2/dnn/dnn.hpp>
 #include <torch/script.h>
 #include <torch/torch.h>
+
 #include "ei.h"
 
 #ifdef HAVE_CUDA
@@ -99,10 +106,10 @@ typedef enum {
   ImageFormatYUV420 = 3
 } ImageFormat;
 
-// typedef enum {
-//   ImageSourceHeap = 0,
-//   ImageSourceSharedMemory = 1
-// } ImageSource;
+typedef enum {
+  ImageSourceMessage = 0,
+  ImageSourceSharedMemory = 1
+} ImageSource;
 
 typedef int64_t ImageDimension;
 
@@ -111,7 +118,9 @@ typedef struct {
   ImageDimension height;
   ImageOrientation orientation;
   ImageFormat format;
+  ImageSource source;
   void *data;
+  size_t length;
 } Image;
 
 typedef struct {
@@ -129,11 +138,13 @@ void setup_torch(void);
 void setup_model(void);
 void send_ready(void);
 void receive_loop(void);
-void process_message(erlang_msg message, ei_x_buff buffer);
-void process_message_infer(erlang_pid from, erlang_ref nonce, Image image);
+void receive_message(erlang_msg message, ei_x_buff buffer);
+ei_x_buff receive_message_infer(erlang_msg message, ei_x_buff buffer, int index_offset);
+ei_x_buff process_message_infer(Image image);
 void send_reply(erlang_pid from, erlang_ref nonce, ei_x_buff response);
 std::string random_name(int length);
-
+int parse_image_orientation(char *in, ImageOrientation *out);
+int parse_image_format(char *in, ImageFormat *out);
 Tensor build_tensor(Image image);
 vector<vector<Detection>> build_detections(Tensor batch, float min_score, float min_iou);
 
@@ -308,14 +319,14 @@ void receive_loop(void) {
         std::cout << "Got Message" << std::endl;
       }
       if ((message.msgtype == ERL_SEND) || (message.msgtype == ERL_REG_SEND)) {
-        process_message(message, buffer);
+        receive_message(message, buffer);
       }
     }
     ei_x_free(&buffer);
   } while (result != ERL_ERROR);
 }
 
-void process_message(erlang_msg message, ei_x_buff buffer) {
+void receive_message(erlang_msg message, ei_x_buff buffer) {
   int version = 0;
   int index = 0;
   int arity = 0;
@@ -326,6 +337,7 @@ void process_message(erlang_msg message, ei_x_buff buffer) {
   if (ErlangDebug) {
     std::cout << "Processing Message" << std::endl;
   }
+
   if ((0 != ei_decode_version(buffer.buff, &index, &version)) ||
       (0 != ei_decode_tuple_header(buffer.buff, &index, &arity)) ||
       (5 != arity) ||
@@ -338,78 +350,149 @@ void process_message(erlang_msg message, ei_x_buff buffer) {
   }
 
   if (0 == strcmp(atom, "infer")) {
-    // {:infer, {width, height, orientation, format, data}}
-    long image_width = 0;
-    long image_height = 0;
-    char image_orientation_atom[MAXATOMLEN];
-    char image_orientation = ImageOrientationUpright;
-    char image_format_atom[MAXATOMLEN];
-    char image_format = ImageFormatUnknown;
-    int image_byte_size = 0;
-    int image_encoded_type = 0;
-    void *image_data = NULL;
-    int arity = 0;
-    if ((0 == ei_decode_tuple_header(buffer.buff, &index, &arity)) &&
-        (5 == arity) &&
-        (0 == ei_decode_long(buffer.buff, &index, &image_width)) &&
-        (0 == ei_decode_long(buffer.buff, &index, &image_height)) &&
-        (0 == ei_decode_atom(buffer.buff, &index, image_orientation_atom)) &&
-        (0 == ei_decode_atom(buffer.buff, &index, image_format_atom)) &&
-        (0 == ei_get_type(buffer.buff, &index, &image_encoded_type, &image_byte_size)) &&
-        (ERL_BINARY_EXT == image_encoded_type) &&
-        (image_data = malloc(image_byte_size))) {
-      long image_length = 0;
-      if (0 == ei_decode_binary(buffer.buff, &index, image_data, &image_length)) {
-        if (0 == strcmp(image_orientation_atom, "upright")) {
-          image_orientation = ImageOrientationUpright;
-        } else if (0 == strcmp(image_orientation_atom, "rotated_90_ccw")) {
-          image_orientation = ImageOrientationRotated90CCW;
-        } else if (0 == strcmp(image_orientation_atom, "rotated_180")) {
-          image_orientation = ImageOrientationRotated180;
-        } else if (0 == strcmp(image_orientation_atom, "rotated_90_cw")) {
-          image_orientation = ImageOrientationRotated90CW;
-        } else {
-          throw runtime_error("Unable to handle image orientation");
-        }
-        if (0 == strcmp(image_format_atom, "RGB")) {
-          image_format = ImageFormatRGBHWC;
-        } else if (0 == strcmp(image_format_atom, "I420")) {
-          image_format = ImageFormatYUV420;
-        } else {
-          throw runtime_error("Unable to handle image format");
-        }
-        Image image = {
-          .width = (ImageDimension)image_width,
-          .height = (ImageDimension)image_height,
-          .orientation = (ImageOrientation)image_orientation,
-          .format = (ImageFormat)image_format,
-          .data = image_data
-        };
-        process_message_infer(from, nonce, image);
-        free(image_data);
-        return;
-      }
-    }
+    ei_x_buff response = receive_message_infer(message, buffer, index);
+    send_reply(from, nonce, response);
+    ei_x_free(&response);
+    return;
   }
+
   throw runtime_error("Unable to handle command");
 }
 
-Tensor build_tensor(Image image) {
-  ImageDimension width = image.width;
-  ImageDimension height = image.height;
-  // ImageOrientation orientation = image.orientation;
-  // ImageFormat format = image.format;
-  void *data = image.data;
-  Tensor input = torch::from_blob(data, {width, height, 3}, torch::kByte);
+ei_x_buff receive_message_infer(erlang_msg message, ei_x_buff buffer, int index_offset) {
+  int i = 0;
+  ei_print_term(stdout, buffer.buff, &i);
 
-  if (TorchDevice == torch::kCPU) {
-    return input.permute({2, 0, 1}).toType(torch::kFloat).div(255).unsqueeze(0);
-  } else {
-    return input.to(torch::kCUDA, true, true).permute({2, 0, 1}).toType(torch::kFloat16).div(255).unsqueeze(0);
+  int index = index_offset;
+  int arity = 0;
+  int type = 0;
+  char atom[MAXATOMLEN];
+  // {:infer, {width, height, orientation, format, data}}
+  long image_width = 0;
+  long image_height = 0;
+  char image_orientation = ImageOrientationUpright;
+  char image_format = ImageFormatUnknown;
+  ImageSource image_source = ImageSourceMessage;
+  int image_data_term_size = 0;
+  int image_data_byte_size = 0;
+  void *image_data = NULL;
+
+  if ((0 != ei_decode_tuple_header(buffer.buff, &index, &arity)) ||
+      (5 != arity) ||
+      (0 != ei_decode_long(buffer.buff, &index, &image_width)) ||
+      (0 != ei_decode_long(buffer.buff, &index, &image_height)) ||
+      (0 != ei_decode_atom(buffer.buff, &index, atom)) ||
+      (0 != parse_image_orientation(atom, (ImageOrientation *)&image_orientation)) ||
+      (0 != ei_decode_atom(buffer.buff, &index, atom)) ||
+      (0 != parse_image_format(atom, (ImageFormat *)&image_format)) ||
+      (0 != ei_get_type(buffer.buff, &index, &type, &image_data_term_size))
+  ) {
+    throw runtime_error("Unable to parse inference request BBB");
   }
+
+  switch (type) {
+    case ERL_BINARY_EXT: {
+      long image_length = 0;
+      image_data = malloc(image_data_term_size);
+      image_data_byte_size = image_data_term_size;
+      if (0 != ei_decode_binary(buffer.buff, &index, image_data, &image_length)) {
+        throw runtime_error("Unable to extract image binary");
+      }
+      break;
+    }
+    case ERL_SMALL_TUPLE_EXT:
+    case ERL_LARGE_TUPLE_EXT: {
+      image_source = ImageSourceSharedMemory;
+      // {:shm, size, capacity, name}
+      long shm_size = 0;
+      long shm_capacity = 0;
+      int shm_name_byte_size = 0;
+      char *shm_name = NULL;
+      int shm_fd = -1;
+      if ((0 != ei_decode_tuple_header(buffer.buff, &index, &arity)) ||
+          (4 != arity) ||
+          (0 != ei_decode_atom(buffer.buff, &index, atom)) ||
+          (0 != strcmp(atom, "shm")) ||
+          (0 != ei_decode_long(buffer.buff, &index, &shm_size)) ||
+          (0 != ei_decode_long(buffer.buff, &index, &shm_capacity)) ||
+          (0 != ei_get_type(buffer.buff, &index, &type, &shm_name_byte_size)) ||
+          (ERL_BINARY_EXT != type) ||
+          (NULL == (shm_name = (char *)malloc(sizeof(char) * (shm_name_byte_size + 1)))) ||
+          (0 != ei_decode_binary(buffer.buff, &index, (void *)shm_name, NULL)) ||
+          (-1 == (shm_fd = shm_open(shm_name, O_RDONLY, 0666))) ||
+          (NULL == (image_data = mmap(NULL, shm_capacity, PROT_READ, MAP_SHARED, shm_fd, 0))) ||
+          (0 != close(shm_fd))
+      ) {
+        throw runtime_error("Unable to extract image binary via mmap");
+      }
+      image_data_byte_size = shm_size;
+      break;
+    }
+    default: {
+      throw runtime_error("Unable to parse inference request (image data type unknown)");;
+    }
+  }
+
+  Image image = {
+    .width = (ImageDimension)image_width,
+    .height = (ImageDimension)image_height,
+    .orientation = (ImageOrientation)image_orientation,
+    .format = (ImageFormat)image_format,
+    .source = image_source,
+    .data = image_data,
+    .length = (size_t)image_data_byte_size
+  };
+  ei_x_buff response = process_message_infer(image);
+  switch (image.source) {
+    case ImageSourceMessage: {
+      free(image.data);
+      break; 
+    }
+    case ImageSourceSharedMemory: {
+      munmap(image.data, image.length);
+      break;
+    }
+  }
+  return response;
 }
 
-void process_message_infer(erlang_pid from, erlang_ref nonce, Image image) {
+int parse_image_orientation(char *in, ImageOrientation *out) {
+  std::cout << "parsing image orientation " << in << std::endl;
+
+  if (0 == strcmp(in, "upright")) {
+    *out = ImageOrientationUpright;
+    return 0;
+  }
+  if (0 == strcmp(in, "rotated_90_ccw")) {
+    *out = ImageOrientationRotated90CCW;
+    return 0;
+  }
+  if (0 == strcmp(in, "rotated_180")) {
+    *out = ImageOrientationRotated180;
+    return 0;
+  }
+  if (0 == strcmp(in, "rotated_90_cw")) {
+    *out = ImageOrientationRotated90CW;
+    return 0;
+  }
+  return -1;
+}
+
+int parse_image_format(char *in, ImageFormat *out) {
+  std::cout << "parsing image format " << in << std::endl;
+
+  if (0 == strcmp(in, "RGB")) {
+    *out = ImageFormatRGBHWC;
+    return 0;
+  }
+  if (0 == strcmp(in, "I420")) {
+    *out = ImageFormatYUV420;
+    return 0;
+  }
+  return -1;
+}
+
+ei_x_buff process_message_infer(Image image) {
   using std::chrono::duration_cast;
   using std::chrono::microseconds;
   using std::chrono::steady_clock;
@@ -466,8 +549,9 @@ void process_message_infer(erlang_pid from, erlang_ref nonce, Image image) {
   ei_x_encode_atom(&response, "process");
   ei_x_encode_longlong(&response, duration_process.count());
   ei_x_encode_empty_list(&response);
-  send_reply(from, nonce, response);
-  ei_x_free(&response);
+  return response;
+  // send_reply(from, nonce, response);
+  // ei_x_free(&response);
 }
 
 void send_reply(erlang_pid from, erlang_ref nonce, ei_x_buff response) {
@@ -489,6 +573,21 @@ std::string random_name(int length) {
     result_character = random_distribution(random_generator);
   }
   return result;
+}
+
+Tensor build_tensor(Image image) {
+  ImageDimension width = image.width;
+  ImageDimension height = image.height;
+  // ImageOrientation orientation = image.orientation;
+  // ImageFormat format = image.format;
+  void *data = image.data;
+  Tensor input = torch::from_blob(data, {width, height, 3}, torch::kByte);
+
+  if (TorchDevice == torch::kCPU) {
+    return input.permute({2, 0, 1}).toType(torch::kFloat).div(255).unsqueeze(0);
+  } else {
+    return input.to(torch::kCUDA, true, true).permute({2, 0, 1}).toType(torch::kFloat16).div(255).unsqueeze(0);
+  }
 }
 
 Tensor build_xyxy(const Tensor& xywh) {

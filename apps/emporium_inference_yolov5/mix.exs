@@ -47,7 +47,8 @@ defmodule EmporiumInference.YOLOv5.Mixfile do
       {:emporium_inference, in_umbrella: true},
       {:elixir_make, "~> 0.7.6"},
       {:erlexec, "~> 1.21.0"},
-      {:sbroker, "1.0.0"}
+      {:sbroker, "1.0.0"},
+      {:shmex, "~> 0.5.0"}
     ]
   end
 end
