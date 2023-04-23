@@ -126,6 +126,12 @@ On Linux, as long as `pkg-config` exists, it should be found automatically, but 
     export PKG_CONFIG_PATH="/usr/local/opt/openssl@3/lib/pkgconfig:$PKG_CONFIG_PATH"
     mix deps.compile fast_tls
 
+### Unable to compile YOLOv5 Runner
+
+When no `CMAKE_CUDA_COMPILER` could be found, it may be due to the lack of `CUDACXX` environment variable, which should be set. Alternatively set `CUDA_HOME`:
+
+https://github.com/jetsonhacks/buildLibrealsense2TX/issues/13#issuecomment-573976359
+
 ### Unable to establish WebRTC Connections
 
 Membrane’s WebRTC implementation includes an integrated TURN server, so you should set both `TURN_IP` and `TURN_MOCK_IP`…
