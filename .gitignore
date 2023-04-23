@@ -3,6 +3,7 @@
 *.ez
 /*.ez
 /.fetch
+/.vscode
 /apps/*/cover
 /apps/*/assets/node_modules
 /apps/*/assets/.fontcustom-manifest.json
