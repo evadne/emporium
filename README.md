@@ -126,6 +126,17 @@ On Linux, as long as `pkg-config` exists, it should be found automatically, but 
     export PKG_CONFIG_PATH="/usr/local/opt/openssl@3/lib/pkgconfig:$PKG_CONFIG_PATH"
     mix deps.compile fast_tls
 
+### Unable to compile YOLOv5 Runner
+
+When no `CMAKE_CUDA_COMPILER` could be found, it may be due to improper configuration of the CUDA Toolkit.
+
+Consider adding the following to `~/.zshrc` or equivalent:
+
+    export CUDA_HOME=/usr/local/cuda
+    export PATH=$CUDA_HOME/bin:$PATH
+
+Once `nvcc` can be found, this problem resolves itself.
+
 ### Unable to establish WebRTC Connections
 
 Membrane’s WebRTC implementation includes an integrated TURN server, so you should set both `TURN_IP` and `TURN_MOCK_IP`…
