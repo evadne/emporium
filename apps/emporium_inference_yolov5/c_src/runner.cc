@@ -142,10 +142,8 @@ static erlang_pid ErlangPid;
 static int ErlangConnection;
 static bool ErlangDebug = true;
 static torch::Device TorchDevice = torch::kCPU;
+static c10::DeviceIndex TorchDeviceIndex = -1;
 static torch::jit::script::Module TorchModel;
-#ifdef HAVE_CUDA
-  static c10::DeviceIndex TorchDeviceIndex = -1;
-#endif
 
 int main(int argc, const char* argv[]) {
   setup_erlang();
@@ -395,17 +393,27 @@ void process_message(erlang_msg message, ei_x_buff buffer) {
 }
 
 Tensor build_tensor(Image image) {
+  using torch::kCUDA;
+  using torch::kByte;
+  using torch::kFloat;
+  using torch::kFloat16;
+
   ImageDimension width = image.width;
   ImageDimension height = image.height;
-  // ImageOrientation orientation = image.orientation;
-  // ImageFormat format = image.format;
+  ImageOrientation orientation = image.orientation;
+  ImageFormat format = image.format;
   void *data = image.data;
-  Tensor input = torch::from_blob(data, {width, height, 3}, torch::kByte);
 
-  if (TorchDevice == torch::kCPU) {
-    return input.permute({2, 0, 1}).toType(torch::kFloat).div(255).unsqueeze(0);
+  if ((orientation != ImageOrientationUpright) ||
+      (format != ImageFormatRGBHWC)) {
+    throw runtime_error("Unable to handle image");
+  }
+
+  Tensor input = torch::from_blob(data, {width, height, 3}, kByte);
+  if (TorchDevice == kCUDA) {
+    return input.to(kCUDA, true, true).permute({2, 0, 1}).toType(kFloat16).div(255).unsqueeze(0);
   } else {
-    return input.to(torch::kCUDA, true, true).permute({2, 0, 1}).toType(torch::kFloat16).div(255).unsqueeze(0);
+    return input.permute({2, 0, 1}).toType(kFloat).div(255).unsqueeze(0);
   }
 }
 
@@ -558,14 +566,15 @@ vector<vector<Detection>> build_detections(Tensor batch, float min_score, float 
     cv::dnn::NMSBoxes(boxes, scores, min_score, min_iou, indices_nms);
 
     for (int index_nms: indices_nms) {
-      Detection item;
-      item.x1 = xyxy_accessor[index_nms][0];
-      item.y1 = xyxy_accessor[index_nms][1];
-      item.x2 = xyxy_accessor[index_nms][2];
-      item.y2 = xyxy_accessor[index_nms][3];
-      item.score = score_accessor[index_nms];
-      item.class_id = class_id_accessor[index_nms];
-      frame_output.emplace_back(item);
+      Detection detection = {
+        .x1 = xyxy_accessor[index_nms][0],
+        .y1 = xyxy_accessor[index_nms][1],
+        .x2 = xyxy_accessor[index_nms][2],
+        .y2 = xyxy_accessor[index_nms][3],
+        .score = score_accessor[index_nms],
+        .class_id = (unsigned long long)class_id_accessor[index_nms]
+      };
+      frame_output.emplace_back(detection);
     }
     batch_output.emplace_back(frame_output);
   }
